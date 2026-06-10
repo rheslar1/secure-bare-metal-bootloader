@@ -13,7 +13,7 @@ jobs:
         run: cmake -S . -B build
       - name: Build
         run: cmake --build build
-      - name: Run starter executable
-        run: ./build/$(basename "$PWD" | tr '-' '_')
+      - name: Run bootloader executable
+        run: ./build/secure_bare_metal_bootloader
       - name: CTest
         run: ctest --test-dir build --output-on-failure

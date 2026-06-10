@@ -1,17 +1,20 @@
 # Validation Plan
 
-## Current Scaffold Checks
+## Current Host Checks
 
 - CMake configure completes.
-- C++17 starter executable builds.
-- Executable prints the project title, SOLID marker, stack, and validation target.
-- CTest verifies the project profile and readiness strategy.
+- C++17 secure boot policy builds.
+- Executable selects a pending signed update from slot B.
+- CTest verifies signature fallback, rollback rejection, DFU request, tamper halt, and boot diagnostics.
+- GitHub Actions runs configure, build, executable smoke run, and CTest.
 
 ## Hardware Evidence To Add
 
-- Board, simulator, or bus setup photo.
-- Terminal output from the first successful run.
-- Timing, power, memory, or safety measurement relevant to this project.
+- Linker map showing bootloader, slot A, slot B, and scratch partitions.
+- UART/USB DFU transcript for a staged update.
+- Signature verification log with accepted SHA-256 digest.
+- Rollback counter persistence evidence across reset.
+- Tamper latch halt evidence.
 - CI screenshot after the public repository is pushed.
 
 ## Project-Specific Evidence Target

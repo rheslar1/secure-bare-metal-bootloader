@@ -4,9 +4,7 @@ Custom bootloader with flash memory partitioning, rollback-safe image slots, cry
 
 ## Portfolio Purpose
 
-This repository is an Embedded Systems project scaffold for the Rheslar portfolio. It is designed to become a hardware-backed project with build output, validation logs, and reviewable implementation evidence.
-
-All generated Embedded Systems repos are C++17-first and are framed around C++ design patterns and SOLID design principles.
+This repository implements a host-testable secure boot policy for a bare-metal dual-slot firmware layout. It models flash partition checks, ECDSA/SHA-256 image validation, rollback counters, pending-update trial boots, confirmed-image fallback, DFU recovery, and tamper halt behavior.
 
 ## Stack
 
@@ -31,11 +29,12 @@ ctest --test-dir build --output-on-failure
 
 ## Implementation Slices
 
-- C++17 starter executable that exposes the project identity, stack, and validation target.
-- Small strategy-style readiness check that keeps the scaffold aligned with C++ design patterns.
-- Architecture document with control boundaries, data flow, safety assumptions, and evidence plan.
-- CTest smoke test that keeps source, docs, and CI files present as the repo grows.
-- GitHub Actions workflow for configure, build, executable smoke run, and repository validation.
+- STM32-style flash layout with bootloader, slot A, slot B, and scratch partitions.
+- Image header policy for vector address, size, SHA-256 digest, ECDSA signature, rollback counter, confirmation, and trial boot attempts.
+- Pending update selection with fallback to a confirmed factory image.
+- Operator DFU mode and tamper-latch halt behavior.
+- Text diagnostics suitable for UART/USB DFU logs.
+- CTest coverage for update selection, signature fallback, rollback rejection, DFU, tamper halt, and report evidence.
 
 ## Evidence Target
 
