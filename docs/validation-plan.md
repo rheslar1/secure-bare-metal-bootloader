@@ -3,9 +3,9 @@
 ## Current Scaffold Checks
 
 - CMake configure completes.
-- Native starter executable builds.
-- Executable prints the project title and validation target.
-- Python unittest smoke test verifies required repo artifacts.
+- C++17 starter executable builds.
+- Executable prints the project title, SOLID marker, stack, and validation target.
+- CTest verifies the project profile and readiness strategy.
 
 ## Hardware Evidence To Add
 
