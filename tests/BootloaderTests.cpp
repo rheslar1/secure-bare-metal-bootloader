@@ -58,7 +58,8 @@ void honorsOperatorDfuRequest() {
 
   assert(decision.accepted);
   assert(decision.action == bootloader::BootAction::EnterDfu);
-  assert(decision.events.size() == 3U);
+  assert(decision.reason == "DFU requested");
+  assert(decision.nextState.dfuCommand == bootloader::DfuCommand::None);
 }
 
 void tamperLatchHaltsBoot() {

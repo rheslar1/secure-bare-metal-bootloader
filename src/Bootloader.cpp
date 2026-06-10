@@ -44,6 +44,14 @@ BootAction actionForSlot(std::string_view slot) {
   return slot == "slot_a" ? BootAction::BootSlotA : BootAction::BootSlotB;
 }
 
+BootHandoffPlan handoffForImage(const ImageHeader& image) {
+  return BootHandoffPlan{
+      image.vectorAddress,
+      image.resetHandlerAddress,
+      true,
+      true};
+}
+
 bool layoutValid(const FlashLayout& layout, std::string& reason) {
   if (layout.bootloader.sizeBytes == 0U || layout.slotA.sizeBytes == 0U ||
       layout.slotB.sizeBytes == 0U || layout.scratch.sizeBytes == 0U) {
@@ -67,6 +75,24 @@ bool layoutValid(const FlashLayout& layout, std::string& reason) {
   }
 
   reason = "flash layout aligned with two application slots";
+  return true;
+}
+
+bool vectorTableValid(const ImageHeader& image, std::string& reason) {
+  if ((image.vectorAddress % 256U) != 0U) {
+    reason = image.slot + " vector table is not 256-byte aligned";
+    return false;
+  }
+
+  if (image.resetHandlerAddress == 0U ||
+      (image.resetHandlerAddress % 2U) == 0U ||
+      image.resetHandlerAddress < image.vectorAddress ||
+      image.resetHandlerAddress >= image.vectorAddress + image.imageSizeBytes) {
+    reason = image.slot + " reset handler is not a valid Thumb address inside image";
+    return false;
+  }
+
+  reason = image.slot + " vector table and reset handler are valid";
   return true;
 }
 
@@ -94,9 +120,24 @@ bool imageBootable(const FlashLayout& layout,
                    const ImageHeader& image,
                    BootDecision& decision) {
   std::string reason;
+  const bool manifestOk = image.manifestPresent;
+  addEvent(decision,
+           image.slot + "-manifest",
+           manifestOk,
+           manifestOk ? "signed image manifest present" : "signed image manifest missing");
+  if (!manifestOk) {
+    return false;
+  }
+
   const bool fits = imageAllowedInSlot(layout, image, reason);
   addEvent(decision, image.slot + "-layout", fits, reason);
   if (!fits) {
+    return false;
+  }
+
+  const bool vectorsOk = vectorTableValid(image, reason);
+  addEvent(decision, image.slot + "-vectors", vectorsOk, reason);
+  if (!vectorsOk) {
     return false;
   }
 
@@ -133,6 +174,17 @@ bool imageBootable(const FlashLayout& layout,
   return image.confirmed || image.pending;
 }
 
+BootState stateAfterBoot(const BootState& state, const ImageHeader& image) {
+  BootState next = state;
+  next.dfuRequested = false;
+  next.dfuCommand = DfuCommand::None;
+  next.scratchDirty = false;
+  if (image.rollbackCounter > next.deviceRollbackCounter) {
+    next.deviceRollbackCounter = image.rollbackCounter;
+  }
+  return next;
+}
+
 }  // namespace
 
 std::string toString(const CheckStatus status) {
@@ -153,6 +205,20 @@ std::string toString(const BootAction action) {
   return "UNKNOWN";
 }
 
+std::string toString(const DfuCommand command) {
+  switch (command) {
+    case DfuCommand::None:
+      return "NONE";
+    case DfuCommand::EnterDfu:
+      return "ENTER_DFU";
+    case DfuCommand::EraseScratch:
+      return "ERASE_SCRATCH";
+    case DfuCommand::AcceptPending:
+      return "ACCEPT_PENDING";
+  }
+  return "UNKNOWN";
+}
+
 SecureBootloader::SecureBootloader(FlashLayout layout,
                                    BootState state,
                                    const IImageVerifier& verifier)
@@ -161,15 +227,18 @@ SecureBootloader::SecureBootloader(FlashLayout layout,
 BootDecision SecureBootloader::decide(const ImageHeader& slotA,
                                       const ImageHeader& slotB) const {
   BootDecision decision;
+  decision.nextState = state_;
 
   auto finish = [&](const bool accepted,
                     const BootAction action,
                     std::string slot,
-                    std::string reason) {
+                    std::string reason,
+                    BootHandoffPlan handoff = {}) {
     decision.accepted = accepted;
     decision.action = action;
     decision.selectedSlot = std::move(slot);
     decision.reason = std::move(reason);
+    decision.handoff = handoff;
     return decision;
   };
 
@@ -186,9 +255,33 @@ BootDecision SecureBootloader::decide(const ImageHeader& slotA,
   }
   addEvent(decision, "tamper-gate", true, "tamper latch clear");
 
-  if (state_.dfuRequested) {
-    addEvent(decision, "dfu-request", true, "operator requested DFU mode");
+  if (state_.pendingStateWriteLocked) {
+    addEvent(decision,
+             "state-store",
+             false,
+             "persistent boot-state writes are locked");
+    return finish(false, BootAction::Halt, "", "boot-state storage is locked");
+  }
+  addEvent(decision, "state-store", true, "persistent boot-state writes available");
+
+  if (state_.dfuRequested || state_.dfuCommand == DfuCommand::EnterDfu) {
+    addEvent(decision,
+             "dfu-request",
+             true,
+             "operator requested DFU mode through " + toString(state_.dfuCommand));
+    decision.nextState.dfuRequested = false;
+    decision.nextState.dfuCommand = DfuCommand::None;
     return finish(true, BootAction::EnterDfu, "", "DFU requested");
+  }
+
+  if (state_.dfuCommand == DfuCommand::EraseScratch) {
+    addEvent(decision, "dfu-command", true, "scratch erase command accepted");
+    decision.nextState.scratchDirty = false;
+  } else if (state_.scratchDirty) {
+    addEvent(decision, "scratch-state", false, "scratch partition dirty after interrupted swap");
+    return finish(true, BootAction::EnterDfu, "", "scratch recovery required");
+  } else {
+    addEvent(decision, "scratch-state", true, "scratch partition clean");
   }
 
   const ImageHeader* preferred = nullptr;
@@ -203,11 +296,13 @@ BootDecision SecureBootloader::decide(const ImageHeader& slotA,
   const ImageHeader* fallback = preferred->slot == slotA.slot ? &slotB : &slotA;
 
   if (imageBootable(layout_, state_, verifier_, *preferred, decision)) {
+    decision.nextState = stateAfterBoot(state_, *preferred);
     return finish(true,
                   actionForSlot(preferred->slot),
                   preferred->slot,
                   "selected " + preferred->slot + " version " +
-                      preferred->version);
+                      preferred->version,
+                  handoffForImage(*preferred));
   }
 
   addEvent(decision,
@@ -216,11 +311,13 @@ BootDecision SecureBootloader::decide(const ImageHeader& slotA,
            "preferred slot rejected, checking alternate slot");
   if (imageBootable(layout_, state_, verifier_, *fallback, decision) &&
       fallback->confirmed) {
+    decision.nextState = stateAfterBoot(state_, *fallback);
     return finish(true,
                   actionForSlot(fallback->slot),
                   fallback->slot,
                   "fallback to confirmed " + fallback->slot + " version " +
-                      fallback->version);
+                      fallback->version,
+                  handoffForImage(*fallback));
   }
 
   addEvent(decision, "dfu-fallback", true, "no bootable image found");
@@ -229,6 +326,11 @@ BootDecision SecureBootloader::decide(const ImageHeader& slotA,
 
 bool SimulatedEcdsaSha256Verifier::verify(const ImageHeader& image,
                                           std::string& reason) const {
+  if (image.signerKeyId != "prod-key-2026") {
+    reason = "signer key id is not trusted";
+    return false;
+  }
+
   if (!image.signaturePresent) {
     reason = "image signature missing";
     return false;
@@ -255,6 +357,22 @@ void TextBootReporter::publish(const BootDecision& decision) const {
           << " action=" << toString(decision.action)
           << " selected=\"" << decision.selectedSlot << "\" reason=\""
           << decision.reason << "\"\n";
+  if (decision.handoff.vectorTableAddress != 0U) {
+    stream_ << "  handoff vector=0x" << std::hex
+            << decision.handoff.vectorTableAddress
+            << " reset=0x" << decision.handoff.resetHandlerAddress
+            << std::dec
+            << " msp_loaded=" << (decision.handoff.mspLoaded ? "true" : "false")
+            << " interrupts_masked="
+            << (decision.handoff.interruptsMasked ? "true" : "false")
+            << '\n';
+  }
+  stream_ << "  next_state rollback_counter="
+          << decision.nextState.deviceRollbackCounter
+          << " scratch_dirty="
+          << (decision.nextState.scratchDirty ? "true" : "false")
+          << " dfu_command=" << toString(decision.nextState.dfuCommand)
+          << '\n';
   for (const auto& event : decision.events) {
     stream_ << "  [" << toString(event.status) << "] " << event.step << ": "
             << event.detail << '\n';
@@ -276,9 +394,12 @@ ImageHeader factoryImage() {
       "1.2.0",
       0x08010000U,
       320U * 1024U,
+      0x08010101U,
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "ECDSA-P256:VALID",
+      "prod-key-2026",
       12U,
+      true,
       true,
       true,
       false,
@@ -291,9 +412,12 @@ ImageHeader pendingUpdateImage() {
       "1.3.0",
       0x08080000U,
       340U * 1024U,
+      0x08080101U,
       "3b7e1f0c9d4a5b682817263544e5f60718c9aabbccddeeff0011223344556677",
       "ECDSA-P256:VALID",
+      "prod-key-2026",
       13U,
+      true,
       true,
       false,
       true,

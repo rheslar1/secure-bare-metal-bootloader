@@ -21,8 +21,16 @@ enum class BootAction {
   Halt
 };
 
+enum class DfuCommand {
+  None,
+  EnterDfu,
+  EraseScratch,
+  AcceptPending
+};
+
 std::string toString(CheckStatus status);
 std::string toString(BootAction action);
+std::string toString(DfuCommand command);
 
 struct FlashRegion {
   std::string name;
@@ -43,10 +51,13 @@ struct ImageHeader {
   std::string version;
   std::uint32_t vectorAddress{};
   std::uint32_t imageSizeBytes{};
+  std::uint32_t resetHandlerAddress{};
   std::string sha256;
   std::string signature;
+  std::string signerKeyId;
   std::uint32_t rollbackCounter{};
   bool signaturePresent{};
+  bool manifestPresent{true};
   bool confirmed{};
   bool pending{};
   std::uint8_t bootAttempts{};
@@ -57,6 +68,9 @@ struct BootState {
   std::uint8_t maxPendingAttempts{3};
   bool dfuRequested{};
   bool tamperLatched{};
+  bool scratchDirty{};
+  bool pendingStateWriteLocked{};
+  DfuCommand dfuCommand{DfuCommand::None};
 };
 
 struct BootEvent {
@@ -65,11 +79,20 @@ struct BootEvent {
   std::string detail;
 };
 
+struct BootHandoffPlan {
+  std::uint32_t vectorTableAddress{};
+  std::uint32_t resetHandlerAddress{};
+  bool interruptsMasked{};
+  bool mspLoaded{};
+};
+
 struct BootDecision {
   bool accepted{};
   BootAction action{BootAction::Halt};
   std::string selectedSlot;
   std::string reason;
+  BootHandoffPlan handoff;
+  BootState nextState;
   std::vector<BootEvent> events;
 };
 
